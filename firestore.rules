@@ -1,0 +1,145 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ===============================================================
+    // Assumed Data Model
+    // ===============================================================
+    //
+    // Collection: agents
+    // Document ID: agentId
+    // Fields: id, name, role, personality, systemPrompt, tasks, inputFormat, outputFormat, primaryLayer, status, lastActive
+    //
+    // Collection: tasks
+    // Document ID: taskId
+    // Fields: id, agentId, title, description, status, layer, timestamp
+    //
+    // Collection: content
+    // Document ID: contentId
+    // Fields: id, title, category, type, isEvergreen, excerpt, content, date, rpm
+    //
+    // Collection: metrics
+    // Document ID: metricLabel
+    // Fields: label, value, trend, category
+    //
+    // Collection: logs
+    // Document ID: logId
+    // Fields: message, timestamp
+    //
+    // ===============================================================
+
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isAuthenticated() &&
+        (get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin' ||
+          (request.auth.token.email == "aphator@gmail.com" && request.auth.token.email_verified == true));
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    function isValidString(field, min, max) {
+      return request.resource.data[field] is string &&
+             request.resource.data[field].size() >= min &&
+             request.resource.data[field].size() <= max;
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+
+    function isValidAgent(data) {
+      return hasRequiredFields(['id', 'name', 'role', 'status']) &&
+             data.id is string &&
+             data.name is string && data.name.size() < 100 &&
+             data.role is string && data.role.size() < 100 &&
+             data.status in ['idle', 'working', 'thinking', 'done'];
+    }
+
+    function isValidTask(data) {
+      return hasRequiredFields(['id', 'agentId', 'title', 'status', 'layer', 'timestamp']) &&
+             data.id is string &&
+             data.agentId is string &&
+             data.title is string && data.title.size() < 200 &&
+             data.status in ['pending', 'in-progress', 'completed'] &&
+             data.layer in ['FRONT', 'OFFICE', 'BACK'];
+    }
+
+    function isValidContent(data) {
+      return hasRequiredFields(['id', 'title', 'category', 'type', 'date']) &&
+             data.id is string &&
+             data.title is string && data.title.size() < 300 &&
+             data.category in ['Tech', 'Games', 'AI', 'Automation', 'Crypto', 'News'] &&
+             data.type in ['Guide', 'Tool', 'Script', 'News', 'Review'];
+    }
+
+    function isValidMetric(data) {
+      return hasRequiredFields(['label', 'value', 'trend', 'category']) &&
+             data.label is string &&
+             data.value is string &&
+             data.trend in ['up', 'down', 'neutral'] &&
+             data.category in ['Traffic', 'Revenue', 'SEO'];
+    }
+
+    function isValidLog(data) {
+      return hasRequiredFields(['message', 'timestamp']) &&
+             data.message is string && data.message.size() < 1000;
+    }
+
+    // ===============================================================
+    // Match Rules
+    // ===============================================================
+
+    match /users/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow write: if isAdmin();
+    }
+
+    match /agents/{agentId} {
+      allow read: if true;
+      allow write: if true; // Temporarily allow for server-side bootstrap
+    }
+
+    match /tasks/{taskId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /content/{contentId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /metrics/{metricId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /logs/{logId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    match /keys/{keyId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // Default deny
+    match /{path=**} {
+      allow read, write: if false;
+    }
+  }
+}
