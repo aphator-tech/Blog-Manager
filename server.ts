@@ -557,8 +557,24 @@ async function startServer() {
       });
     }
 
-    app.listen(PORT, "0.0.0.0", () => {
+    const server = app.listen(PORT, "0.0.0.0", () => {
       console.log(`Server running on http://localhost:${PORT}`);
+    });
+
+    server.on('error', (err: any) => {
+      if (err.code === 'EADDRINUSE') {
+        console.error(`Port ${PORT} is already in use. Trying port ${PORT + 1}...`);
+        const retryServer = app.listen(PORT + 1, "0.0.0.0", () => {
+          console.log(`Server running on http://localhost:${PORT + 1}`);
+        });
+        retryServer.on('error', (retryErr: any) => {
+          console.error("CRITICAL: Unable to find available port:", retryErr);
+          process.exit(1);
+        });
+      } else {
+        console.error("CRITICAL: Server error:", err);
+        process.exit(1);
+      }
     });
   } catch (error) {
     console.error("CRITICAL: Failed to start server:", error);
