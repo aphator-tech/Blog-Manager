@@ -100,21 +100,25 @@ const initialMetrics: Metric[] = [
 ];
 
 async function bootstrap() {
+  console.log("[v0] Bootstrap starting with file-based storage...");
   const agents = storage.getAgents();
+  console.log(`[v0] Found ${agents.length} agents in storage`);
   if (agents.length === 0) {
-    console.log("Bootstrapping agents...");
+    console.log("[v0] Bootstrapping agents...");
     for (const agent of initialAgents) {
       storage.setAgent(agent.id, agent);
     }
   }
 
   const metrics = storage.getMetrics();
+  console.log(`[v0] Found ${metrics.length} metrics in storage`);
   if (metrics.length === 0) {
-    console.log("Bootstrapping metrics...");
+    console.log("[v0] Bootstrapping metrics...");
     for (const metric of initialMetrics) {
       storage.setMetric(metric.label, metric);
     }
   }
+  console.log("[v0] Bootstrap complete!");
 }
 
 // --- Automated Key Fetching ---
@@ -396,7 +400,9 @@ async function simulateMetrics(metrics: Metric[], contentCount: number) {
 // --- Server Setup ---
 async function startServer() {
   try {
-    console.log("Starting server initialization...");
+    console.log("[v0] ====== NEW SERVER STARTUP (FIREBASE REMOVED) ======");
+    console.log("[v0] Starting server initialization...");
+    console.log("[v0] Using file-based storage system");
     await bootstrap();
     console.log("Bootstrap complete.");
     
@@ -527,21 +533,25 @@ async function startServer() {
     }
 
     const server = app.listen(PORT, "0.0.0.0", () => {
-      console.log(`Server running on http://localhost:${PORT}`);
+      console.log(`[v0] ✓ Server running on http://localhost:${PORT}`);
+      console.log(`[v0] New file-based storage system active`);
+      console.log(`[v0] All data stored in: .storage/data.json`);
     });
 
     server.on('error', (err: any) => {
       if (err.code === 'EADDRINUSE') {
-        console.error(`Port ${PORT} is already in use. Trying port ${PORT + 1}...`);
+        console.error(`[v0] Port ${PORT} is already in use. Trying port ${PORT + 1}...`);
         const retryServer = app.listen(PORT + 1, "0.0.0.0", () => {
-          console.log(`Server running on http://localhost:${PORT + 1}`);
+          console.log(`[v0] ✓ Server running on http://localhost:${PORT + 1}`);
+          console.log(`[v0] New file-based storage system active`);
+          console.log(`[v0] All data stored in: .storage/data.json`);
         });
         retryServer.on('error', (retryErr: any) => {
-          console.error("CRITICAL: Unable to find available port:", retryErr);
+          console.error("[v0] CRITICAL: Unable to find available port:", retryErr);
           process.exit(1);
         });
       } else {
-        console.error("CRITICAL: Server error:", err);
+        console.error("[v0] CRITICAL: Server error:", err);
         process.exit(1);
       }
     });
