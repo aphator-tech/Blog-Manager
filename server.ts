@@ -3,40 +3,18 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
 import { GoogleGenAI } from "@google/genai";
-import { initializeApp } from 'firebase/app';
-import { getFirestore, collection, getDocs, addDoc, updateDoc, doc, query, where, limit, orderBy, setDoc, getDoc, getDocFromServer, deleteDoc } from 'firebase/firestore';
 import { createRequire } from "module";
 import fetch from "node-fetch";
+import storage from "./src/storage";
 
 const require = createRequire(import.meta.url);
 import { Agent, Task, ContentItem, Metric, Layer } from "./src/types";
-
-const firebaseConfig = require("./firebase-applet-config.json");
 
 console.log("Environment Variables Check:");
 console.log("- GEMINI_API_KEY present:", !!process.env.GEMINI_API_KEY);
 console.log("- API_KEY present:", !!process.env.API_KEY);
 console.log("- GOOGLE_API_KEY present:", !!process.env.GOOGLE_API_KEY);
-
-console.log("Firebase Project ID:", firebaseConfig.projectId);
-console.log("Firestore Database ID:", firebaseConfig.firestoreDatabaseId);
-
-// --- Firebase Initialization ---
-const firebaseApp = initializeApp(firebaseConfig);
-const db = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
-
-async function testConnection() {
-  try {
-    console.log("Testing Firestore connection...");
-    await getDocFromServer(doc(db, 'test', 'connection'));
-    console.log("Firestore connection test successful (or at least not offline).");
-  } catch (error) {
-    console.error("Firestore connection test failed:", error);
-    if(error instanceof Error && error.message.includes('the client is offline')) {
-      console.error("CRITICAL: Firestore client is offline. Check configuration.");
-    }
-  }
-}
+console.log("Storage system initialized: File-based JSON storage in .storage/data.json");
 
 // --- Initial Data (for bootstrapping) ---
 const initialAgents: Agent[] = [
@@ -122,19 +100,19 @@ const initialMetrics: Metric[] = [
 ];
 
 async function bootstrap() {
-  const agentsSnap = await getDocs(collection(db, 'agents'));
-  if (agentsSnap.empty) {
+  const agents = storage.getAgents();
+  if (agents.length === 0) {
     console.log("Bootstrapping agents...");
     for (const agent of initialAgents) {
-      await setDoc(doc(db, 'agents', agent.id), agent);
+      storage.setAgent(agent.id, agent);
     }
   }
 
-  const metricsSnap = await getDocs(collection(db, 'metrics'));
-  if (metricsSnap.empty) {
+  const metrics = storage.getMetrics();
+  if (metrics.length === 0) {
     console.log("Bootstrapping metrics...");
     for (const metric of initialMetrics) {
-      await setDoc(doc(db, 'metrics', metric.label), metric);
+      storage.setMetric(metric.label, metric);
     }
   }
 }
@@ -196,15 +174,15 @@ async function fetchAutomatedKey(retries = 2) {
           fetchedAt: new Date().toISOString()
         };
         
-        // Also add to Firestore for rotation
-        await addDoc(collection(db, 'keys'), {
+        // Also add to storage for rotation
+        storage.addKey({
           key: data.apiKey,
           addedAt: new Date().toISOString(),
           status: 'automated',
           source: 'unsecuredapikeys.com'
         });
         
-        await addDoc(collection(db, 'logs'), {
+        storage.addLog({
           message: `Automated key fetched: ${data.apiKey.substring(0, 4)}... (Status: ${data.status})`,
           timestamp: new Date().toISOString()
         });
@@ -236,29 +214,27 @@ async function getAI() {
     return new GoogleGenAI({ apiKey: envKey });
   }
 
-  // Fallback 1: Try to get a key from Firestore 'keys' collection
+  // Fallback 1: Try to get a key from storage 'keys' collection
   try {
-    const keysSnap = await getDocs(collection(db, 'keys'));
-    if (!keysSnap.empty) {
+    const storedKeys = storage.getKeys();
+    if (storedKeys.length > 0) {
       // Filter for keys that look like Gemini keys
-      const validFirestoreKeys = keysSnap.docs
-        .map(d => d.data())
-        .filter(d => {
-          const k = d.key || d.apiKey || d.value;
-          return k && !invalidKeys.includes(k) && k.startsWith('AIza');
-        });
+      const validStoredKeys = storedKeys.filter(d => {
+        const k = d.key || d.apiKey || d.value;
+        return k && !invalidKeys.includes(k) && k.startsWith('AIza');
+      });
 
-      if (validFirestoreKeys.length > 0) {
-        const randomKey = validFirestoreKeys[Math.floor(Math.random() * validFirestoreKeys.length)];
-        const firestoreKey = randomKey.key || randomKey.apiKey || randomKey.value;
-        console.log(`Gemini API key detected from Firestore 'keys' collection (starts with: ${firestoreKey.substring(0, 4)}...)`);
-        return new GoogleGenAI({ apiKey: firestoreKey });
+      if (validStoredKeys.length > 0) {
+        const randomKey = validStoredKeys[Math.floor(Math.random() * validStoredKeys.length)];
+        const storedKey = randomKey.key || randomKey.apiKey || randomKey.value;
+        console.log(`Gemini API key detected from storage 'keys' (starts with: ${storedKey.substring(0, 4)}...)`);
+        return new GoogleGenAI({ apiKey: storedKey });
       } else {
-        console.warn("Firestore 'keys' collection has entries, but none start with 'AIza'. They might be OpenAI keys.");
+        console.warn("Storage 'keys' has entries, but none start with 'AIza'. They might be OpenAI keys.");
       }
     }
   } catch (error) {
-    console.error("Error fetching keys from Firestore:", error);
+    console.error("Error fetching keys from storage:", error);
   }
 
   // Fallback 2: Try to fetch a fresh automated key
@@ -273,7 +249,7 @@ async function getAI() {
   const cooldownRemaining = Math.max(0, Math.ceil((COOLDOWN_429 - (Date.now() - last429Time)) / 60000));
   const errorMsg = cooldownRemaining > 0 
     ? `Gemini API key is missing and automated fetcher is in cooldown (${cooldownRemaining}m remaining). Please add a key manually.`
-    : "Gemini API key is missing or invalid. Please ensure GEMINI_API_KEY is configured in the Secrets menu (Settings -> Secrets). Alternatively, you can add keys to the 'keys' collection in Firestore for rotation.";
+    : "Gemini API key is missing or invalid. Please ensure GEMINI_API_KEY is configured in the Secrets menu (Settings -> Secrets). You can also add keys via the Office dashboard or they'll be stored in .storage/data.json";
   
   throw new Error(errorMsg);
 }
@@ -290,23 +266,18 @@ async function processAutonomousLoop() {
   
   try {
     // 0. Fetch State
-    const agentsSnap = await getDocs(collection(db, 'agents'));
-    const agents = agentsSnap.docs.map(d => d.data() as Agent);
-    
-    const tasksSnap = await getDocs(query(collection(db, 'tasks'), where('status', '==', 'pending'), limit(1)));
-    const task = tasksSnap.empty ? null : { ...tasksSnap.docs[0].data() as Task, firestoreId: tasksSnap.docs[0].id };
-
-    const metricsSnap = await getDocs(collection(db, 'metrics'));
-    const metrics = metricsSnap.docs.map(d => d.data() as Metric);
-
-    const contentSnap = await getDocs(collection(db, 'content'));
-    const contentCount = contentSnap.size;
+    const agents = storage.getAgents() as Agent[];
+    const tasks = storage.getPendingTasks() as Task[];
+    const task = tasks.length > 0 ? tasks[0] : null;
+    const metrics = storage.getMetrics() as Metric[];
+    const content = storage.getContent();
+    const contentCount = content.length;
 
     // 1. Update metrics
     await simulateMetrics(metrics, contentCount);
 
     if (!task) {
-      await generateNewTask(agents, metrics, tasksSnap.size);
+      await generateNewTask(agents, metrics, tasks.length);
       return;
     }
 
@@ -314,8 +285,8 @@ async function processAutonomousLoop() {
     if (!agent) return;
 
     // 2. Execute task
-    await updateDoc(doc(db, 'agents', agent.id), { status: 'working', lastActive: new Date().toISOString() });
-    await updateDoc(doc(db, 'tasks', task.firestoreId!), { status: 'in-progress' });
+    storage.setAgent(agent.id, { ...agent, status: 'working', lastActive: new Date().toISOString() });
+    storage.updateTask(task.firestoreId!, { status: 'in-progress' });
 
     const response = await ai.models.generateContent({
       model: "gemini-3-flash-preview",
@@ -325,7 +296,7 @@ async function processAutonomousLoop() {
     const result = response.text;
     console.log(`Agent ${agent.name} completed task: ${task.title}`);
     
-    await addDoc(collection(db, 'logs'), {
+    storage.addLog({
       message: `${agent.name} completed: ${task.title}`,
       timestamp: new Date().toISOString()
     });
@@ -336,7 +307,7 @@ async function processAutonomousLoop() {
                        task.title.toLowerCase().includes('crypto') ? 'Crypto' :
                        task.title.toLowerCase().includes('automation') ? 'Automation' : 'AI';
       
-      await addDoc(collection(db, 'content'), {
+      storage.addContent({
         id: `c${contentCount + 1}`,
         title: task.title,
         category: category as any,
@@ -349,8 +320,8 @@ async function processAutonomousLoop() {
       });
     }
 
-    await updateDoc(doc(db, 'tasks', task.firestoreId!), { status: 'completed' });
-    await updateDoc(doc(db, 'agents', agent.id), { status: 'idle' });
+    storage.updateTask(task.firestoreId!, { status: 'completed' });
+    storage.setAgent(agent.id, { ...agent, status: 'idle' });
 
   } catch (error) {
     console.error("Error in autonomous loop:", error);
@@ -367,7 +338,7 @@ async function generateNewTask(agents: Agent[], metrics: Metric[], taskCount: nu
     return;
   }
   const ceo = agents.find(a => a.id === 'ceo')!;
-  await updateDoc(doc(db, 'agents', 'ceo'), { status: 'thinking' });
+  storage.setAgent('ceo', { ...ceo, status: 'thinking' });
 
   const traffic = metrics.find(m => m.label === 'Organic Search Traffic')?.value;
   const revenue = metrics.find(m => m.label === 'Monthly Recurring Revenue')?.value;
@@ -383,7 +354,7 @@ async function generateNewTask(agents: Agent[], metrics: Metric[], taskCount: nu
     });
 
     const newTaskData = JSON.parse(response.text);
-    await addDoc(collection(db, 'tasks'), {
+    storage.addTask({
       id: `t${taskCount + 1}`,
       agentId: newTaskData.agentId,
       title: newTaskData.title,
@@ -393,14 +364,14 @@ async function generateNewTask(agents: Agent[], metrics: Metric[], taskCount: nu
       timestamp: new Date().toISOString()
     });
 
-    await addDoc(collection(db, 'logs'), {
+    storage.addLog({
       message: `CEO generated new task: ${newTaskData.title}`,
       timestamp: new Date().toISOString()
     });
   } catch (error) {
     console.error("Error generating new task:", error);
   } finally {
-    await updateDoc(doc(db, 'agents', 'ceo'), { status: 'idle' });
+    storage.setAgent('ceo', { ...ceo, status: 'idle' });
   }
 }
 
@@ -409,12 +380,12 @@ async function simulateMetrics(metrics: Metric[], contentCount: number) {
     if (metric.label === 'Organic Traffic') {
       let currentTraffic = parseInt(String(metric.value).replace(/,/g, ''));
       currentTraffic += Math.floor(Math.random() * 100) + (contentCount * 10);
-      await updateDoc(doc(db, 'metrics', metric.label), { value: currentTraffic.toLocaleString(), trend: 'up' });
+      storage.updateMetric(metric.label, { value: currentTraffic.toLocaleString(), trend: 'up' });
     } else if (metric.label === 'Search Visibility') {
       let currentVisibility = parseFloat(String(metric.value).replace('%', ''));
       currentVisibility += (Math.random() * 0.1);
       if (currentVisibility > 100) currentVisibility = 100;
-      await updateDoc(doc(db, 'metrics', metric.label), { 
+      storage.updateMetric(metric.label, { 
         value: `${currentVisibility.toFixed(1)}%`,
         trend: 'up'
       });
@@ -426,7 +397,6 @@ async function simulateMetrics(metrics: Metric[], contentCount: number) {
 async function startServer() {
   try {
     console.log("Starting server initialization...");
-    await testConnection();
     await bootstrap();
     console.log("Bootstrap complete.");
     
@@ -448,9 +418,8 @@ async function startServer() {
         const envKey = process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.GOOGLE_API_KEY;
         const invalidKeys = ["dummy_key", "undefined", "null", "MY_GEMINI_API_KEY", "YOUR_API_KEY", "REPLACE_ME", "YOUR_GEMINI_API_KEY_HERE"];
         
-        const keysSnap = await getDocs(collection(db, 'keys'));
-        const validFirestoreKeys = keysSnap.docs
-          .map(d => d.data())
+        const storedKeys = storage.getKeys();
+        const validStoredKeys = storedKeys
           .filter(d => {
             const k = d.key || d.apiKey || d.value;
             return k && !invalidKeys.includes(k) && k.startsWith('AIza');
@@ -460,7 +429,7 @@ async function startServer() {
 
         res.json({
           env: (envKey && !invalidKeys.includes(envKey)) ? 'Configured' : 'Missing',
-          firestore: validFirestoreKeys.length > 0 ? `${validFirestoreKeys.length} Keys` : 'Empty',
+          storage: validStoredKeys.length > 0 ? `${validStoredKeys.length} Keys` : 'Empty',
           automated: currentAutomatedKey?.status === 'Valid' ? 'Active' : (cooldownRemaining > 0 ? `Cooldown (${cooldownRemaining}m)` : 'Inactive'),
           last429: last429Time > 0 ? new Date(last429Time).toISOString() : null
         });
@@ -493,13 +462,13 @@ async function startServer() {
       if (!key || key.length < 20) return res.status(400).json({ error: "Invalid key format" });
       
       try {
-        await addDoc(collection(db, 'keys'), {
+        storage.addKey({
           key,
           addedAt: new Date().toISOString(),
           status: 'active',
           source: 'manual'
         });
-        await addDoc(collection(db, 'logs'), {
+        storage.addLog({
           message: `New Gemini API key added to rotation (starts with: ${key.substring(0, 4)}...)`,
           timestamp: new Date().toISOString()
         });
@@ -517,22 +486,22 @@ async function startServer() {
     // API Endpoints (Now just proxies to Firestore or returns cached state)
     app.get("/api/state", async (req, res) => {
       try {
-        const agentsSnap = await getDocs(collection(db, 'agents'));
-        const tasksSnap = await getDocs(query(collection(db, 'tasks'), orderBy('timestamp', 'desc'), limit(50)));
-        const contentSnap = await getDocs(query(collection(db, 'content'), orderBy('date', 'desc'), limit(50)));
-        const metricsSnap = await getDocs(collection(db, 'metrics'));
-        const logsSnap = await getDocs(query(collection(db, 'logs'), orderBy('timestamp', 'desc'), limit(50)));
+        const agents = storage.getAgents();
+        const tasks = storage.getTasks();
+        const content = storage.getContent();
+        const metrics = storage.getMetrics();
+        const logs = storage.getLogs();
 
         const envKey = process.env.GEMINI_API_KEY || process.env.API_KEY || process.env.GOOGLE_API_KEY;
         const invalidKeys = ["dummy_key", "undefined", "null", "MY_GEMINI_API_KEY", "YOUR_API_KEY", "REPLACE_ME", "YOUR_GEMINI_API_KEY_HERE"];
         const hasKey = (envKey && !invalidKeys.includes(envKey)) || currentAutomatedKey?.status === 'Valid';
 
         res.json({
-          agents: agentsSnap.docs.map(d => d.data()),
-          tasks: tasksSnap.docs.map(d => d.data()),
-          content: contentSnap.docs.map(d => d.data()),
-          metrics: metricsSnap.docs.map(d => d.data()),
-          logs: logsSnap.docs.map(d => d.data()?.message || "No message"),
+          agents: agents,
+          tasks: tasks,
+          content: content,
+          metrics: metrics,
+          logs: logs.map(l => l.message || "No message"),
           systemHealthy: hasKey
         });
       } catch (error) {
