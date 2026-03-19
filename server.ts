@@ -518,12 +518,18 @@ async function startServer() {
 
     // Vite middleware for development
     if (process.env.NODE_ENV !== "production") {
-      console.log("Setting up Vite middleware...");
-      const vite = await createViteServer({
-        server: { middlewareMode: true },
-        appType: "spa",
-      });
-      app.use(vite.middlewares);
+      console.log("[v0] Setting up Vite middleware for development...");
+      try {
+        const vite = await createViteServer({
+          server: { middlewareMode: true },
+          appType: "spa",
+        });
+        app.use(vite.middlewares);
+        console.log("[v0] Vite middleware initialized successfully");
+      } catch (viteError) {
+        console.error("[v0] Error initializing Vite:", viteError);
+        throw viteError;
+      }
     } else {
       const distPath = path.join(process.cwd(), 'dist');
       app.use(express.static(distPath));
@@ -531,6 +537,12 @@ async function startServer() {
         res.sendFile(path.join(distPath, 'index.html'));
       });
     }
+
+    // Catch-all 404 handler with debugging
+    app.use((req, res) => {
+      console.log(`[v0] 404 - ${req.method} ${req.path}`);
+      res.status(404).json({ error: "Not found", path: req.path, method: req.method });
+    });
 
     const server = app.listen(PORT, "0.0.0.0", () => {
       console.log(`[v0] ✓ Server running on http://localhost:${PORT}`);
